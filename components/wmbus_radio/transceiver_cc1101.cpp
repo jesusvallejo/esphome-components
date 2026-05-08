@@ -9,6 +9,12 @@ static const char *TAG = "CC1101";
 // CC1101 crystal frequency (standard 26 MHz)
 #define F_XTAL 26000000
 
+// Maximum number of attempts when applying the TI SWRZ020 status-register
+// read-twice workaround. Two consecutive identical reads are accepted as
+// stable; if the chip keeps changing the value we give up and return the
+// last sample (still better than a single unverified read).
+#define CC1101_STATUS_READ_MAX_TRIES 5
+
 void CC1101::setup() {
   this->common_setup();
 
@@ -75,67 +81,47 @@ void CC1101::setup() {
 
   ESP_LOGVV(TAG, "configuring modem");
   // Modem configuration for 100 kbps, 2-FSK, 50 kHz deviation
-  // MDMCFG4: Channel bandwidth and data rate exponent
-  // BW = f_xtal / (8 * (4 + CHANBW_M) * 2^CHANBW_E) = 26M / (8 * 4 * 4) = ~203 kHz
   this->write_register(CC1101_MDMCFG4, 0x5C);
-  // MDMCFG3: Data rate mantissa
-  // DRATE = ((256 + DRATE_M) * 2^DRATE_E) * f_xtal / 2^28 = 100 kbps
   this->write_register(CC1101_MDMCFG3, 0x04);
-  // MDMCFG2: Modulation format (2-FSK), sync mode (16/16 sync word bits)
   this->write_register(CC1101_MDMCFG2, 0x06);
-  // MDMCFG1: FEC disabled, preamble 4 bytes
   this->write_register(CC1101_MDMCFG1, 0x22);
-  // MDMCFG0: Channel spacing exponent
   this->write_register(CC1101_MDMCFG0, 0xF8);
 
   ESP_LOGVV(TAG, "configuring deviation");
   // Deviation: ~50 kHz
-  // DEVIATION = (f_xtal / 2^17) * (8 + DEVIATION_M) * 2^DEVIATION_E
   this->write_register(CC1101_DEVIATN, 0x44);
 
   ESP_LOGVV(TAG, "configuring state machine");
-  // MCSM2: RX time qualifier enabled
   this->write_register(CC1101_MCSM2, 0x07);
-  // MCSM1: CCA mode, RX after RX, IDLE after TX
   this->write_register(CC1101_MCSM1, 0x00);
-  // MCSM0: Auto calibrate from IDLE to RX/TX, PO timeout
   this->write_register(CC1101_MCSM0, 0x18);
 
   ESP_LOGVV(TAG, "configuring AFC/AGC");
-  // FOCCFG: Frequency offset compensation
   this->write_register(CC1101_FOCCFG, 0x2E);
-  // BSCFG: Bit synchronization
   this->write_register(CC1101_BSCFG, 0xBF);
-  // AGC control
   this->write_register(CC1101_AGCCTRL2, 0x43);
   this->write_register(CC1101_AGCCTRL1, 0x09);
   this->write_register(CC1101_AGCCTRL0, 0xB5);
 
   ESP_LOGVV(TAG, "configuring WOR");
-  // Wake-on-Radio: disabled (but configured for compatibility)
   this->write_register(CC1101_WOREVT1, 0x87);
   this->write_register(CC1101_WOREVT0, 0x6B);
   this->write_register(CC1101_WORCTRL, 0xFB);
 
   ESP_LOGVV(TAG, "configuring front end");
-  // Front end RX: LNA and mixer current
   this->write_register(CC1101_FREND1, 0xB6);
-  // Front end TX: PA power index
   this->write_register(CC1101_FREND0, 0x10);
 
   ESP_LOGVV(TAG, "configuring frequency calibration");
-  // Frequency synthesizer calibration
   this->write_register(CC1101_FSCAL3, 0xEA);
   this->write_register(CC1101_FSCAL2, 0x2A);
   this->write_register(CC1101_FSCAL1, 0x00);
   this->write_register(CC1101_FSCAL0, 0x1F);
 
-  // RC oscillator configuration
   this->write_register(CC1101_RCCTRL1, 0x41);
   this->write_register(CC1101_RCCTRL0, 0x00);
 
   ESP_LOGVV(TAG, "configuring test registers");
-  // Test registers for optimal performance
   this->write_register(CC1101_FSTEST, 0x59);
   this->write_register(CC1101_PTEST, 0x7F);
   this->write_register(CC1101_AGCTEST, 0x3F);
@@ -144,12 +130,10 @@ void CC1101::setup() {
   this->write_register(CC1101_TEST0, 0x09);
 
   ESP_LOGVV(TAG, "calibrating");
-  // Calibrate frequency synthesizer
   this->strobe(CC1101_SCAL);
   delay(1);
 
   ESP_LOGVV(TAG, "entering RX mode");
-  // Flush RX FIFO and enter RX mode
   this->strobe(CC1101_SFRX);
   this->strobe(CC1101_SRX);
 
@@ -171,12 +155,31 @@ uint8_t CC1101::read_register(uint8_t address) {
   return value;
 }
 
-uint8_t CC1101::read_status_register(uint8_t address) {
+// Single (raw) status-register read. CC1101 status registers must be
+// addressed with the burst bit set (datasheet section 10.3).
+uint8_t CC1101::read_status_register_raw_(uint8_t address) {
   this->delegate_->begin_transaction();
   this->delegate_->transfer(address | CC1101_READ_BURST);
   uint8_t value = this->delegate_->transfer(0x00);
   this->delegate_->end_transaction();
   return value;
+}
+
+// Status register read with the SWRZ020 errata workaround.
+// "Radio status register read access" — the value of a status register may
+// be wrong if it is read while the chip is updating it. The recommended
+// workaround is to read the register twice and only accept the value when
+// two consecutive reads return the same data. We retry up to
+// CC1101_STATUS_READ_MAX_TRIES times before giving up.
+uint8_t CC1101::read_status_register(uint8_t address) {
+  uint8_t prev = this->read_status_register_raw_(address);
+  for (uint8_t i = 0; i < CC1101_STATUS_READ_MAX_TRIES; i++) {
+    uint8_t curr = this->read_status_register_raw_(address);
+    if (curr == prev)
+      return curr;
+    prev = curr;
+  }
+  return prev;
 }
 
 void CC1101::write_register(uint8_t address, uint8_t value) {
@@ -209,14 +212,11 @@ uint8_t CC1101::get_rx_bytes() {
 }
 
 optional<uint8_t> CC1101::read() {
-  // Check if IRQ pin indicates data available (active low = FIFO threshold reached)
+  // Active low IRQ = FIFO threshold reached
   if (this->irq_pin_->digital_read() == false) {
     uint8_t rx_bytes = this->get_rx_bytes();
     if (rx_bytes > 0) {
-      // Read RSSI before reading data byte (RSSI is valid after sync word)
       this->last_rssi_ = (int8_t)this->read_status_register(CC1101_RSSI);
-
-      // Read single byte from RX FIFO
       uint8_t data;
       this->read_burst(CC1101_RXFIFO, &data, 1);
       return data;
@@ -226,8 +226,6 @@ optional<uint8_t> CC1101::read() {
 }
 
 size_t CC1101::get_frame(uint8_t *buffer, size_t length, uint32_t offset) {
-  // CC1101 reads byte-by-byte from FIFO (offset is ignored for FIFO-based reading)
-  // Returns 1 on success, 0 if FIFO is empty (waiting for more data)
   auto byte = this->read();
   if (!byte.has_value())
     return 0;
@@ -238,22 +236,16 @@ size_t CC1101::get_frame(uint8_t *buffer, size_t length, uint32_t offset) {
 
 void CC1101::restart_rx() {
   ESP_LOGVV(TAG, "Restarting RX");
-
-  // Go to IDLE state
   this->strobe(CC1101_SIDLE);
   delay(1);
-
-  // Flush RX FIFO
   this->strobe(CC1101_SFRX);
-
-  // Enter RX mode
   this->strobe(CC1101_SRX);
   delay(1);
 }
 
 int8_t CC1101::get_rssi() {
   // Convert RSSI_dec to dBm: RSSI_dBm = (RSSI_dec / 2) - RSSI_offset
-  // RSSI offset per TI DN505: 74 dBm for 868 MHz, 76 dBm for 433 MHz
+  // RSSI offset per TI DN505: 74 dBm @ 868 MHz, 76 dBm @ 433 MHz
   int8_t rssi_offset = (this->frequency_hz_ < 600000000u) ? 76 : 74;
   int8_t rssi_dec = this->last_rssi_;
   int16_t rssi_dbm;
@@ -272,8 +264,9 @@ bool CC1101::read_in_task(uint8_t *buffer, size_t length, uint32_t offset) {
   uint32_t last_progress = millis();
 
   while (total < length) {
-    // Check for FIFO overflow
     uint8_t rxbytes_raw = this->read_status_register(CC1101_RXBYTES);
+
+    // FIFO overflow — bit 0x80 set
     if (rxbytes_raw & 0x80) {
       ESP_LOGW(TAG, "RX FIFO overflow");
       this->restart_rx();
@@ -284,10 +277,11 @@ bool CC1101::read_in_task(uint8_t *buffer, size_t length, uint32_t offset) {
     size_t remaining = length - total;
 
     if (available > 0) {
-      // CC1101 errata: don't empty FIFO completely when more data expected
+      // CC1101 RX FIFO errata: when more data is still expected, never empty
+      // the FIFO completely — leave at least one byte behind.
       size_t to_read = (remaining > 1 && available > 1)
-                       ? std::min((size_t)(available - 1), remaining)
-                       : std::min((size_t)available, remaining);
+                           ? std::min((size_t)(available - 1), remaining)
+                           : std::min((size_t)available, remaining);
 
       if (to_read > 0) {
         if (total == 0 && offset == 0) {
@@ -296,14 +290,14 @@ bool CC1101::read_in_task(uint8_t *buffer, size_t length, uint32_t offset) {
         this->read_burst(CC1101_RXFIFO, buffer + total, to_read);
         total += to_read;
         last_progress = millis();
+        continue;  // re-check the FIFO immediately
       }
     }
 
-    // Check end-of-packet via MARCSTATE (IDLE or RX_END = packet done)
+    // End-of-packet check via MARCSTATE (with errata workaround).
     if (total > 0 && total < length) {
       uint8_t marcstate = this->read_status_register(CC1101_MARCSTATE) & 0x1F;
       if (marcstate == CC1101_MARCSTATE_IDLE || marcstate == CC1101_MARCSTATE_RX_END) {
-        // Packet finished, drain remaining FIFO
         uint8_t final_bytes = this->read_status_register(CC1101_RXBYTES) & 0x7F;
         if (final_bytes > 0 && total + final_bytes <= length) {
           this->read_burst(CC1101_RXFIFO, buffer + total, final_bytes);
@@ -313,13 +307,15 @@ bool CC1101::read_in_task(uint8_t *buffer, size_t length, uint32_t offset) {
       }
     }
 
-    // Timeout: 500ms without progress
+    // No progress for 500 ms — give up and let the receiver task re-arm.
     if (millis() - last_progress > 500) {
       ESP_LOGW(TAG, "RX timeout after %zu bytes (need %zu)", total + offset, length + offset);
       return false;
     }
 
-    delayMicroseconds(200);
+    // Sleep ~1 ms instead of busy-polling at 200 µs. Drops SPI traffic ~5x
+    // during quiet periods and yields the CPU to other FreeRTOS tasks.
+    delay(1);
   }
 
   return (total == length);
