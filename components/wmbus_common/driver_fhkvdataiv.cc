@@ -31,6 +31,7 @@ namespace
         di.setDefaultFields("name,id,current_consumption_hca,set_date,consumption_at_set_date_hca,timestamp");
         di.setMeterType(MeterType::HeatCostAllocationMeter);
         di.addLinkMode(LinkMode::T1);
+        di.addLinkMode(LinkMode::C1);  // Techem doprimo 3 radio net OMS and similar OMS-C1 devices
         di.addDetection(MANUFACTURER_TCH,  0x08,  0x69);
         di.addDetection(MANUFACTURER_TCH,  0x08,  0x94);
 
