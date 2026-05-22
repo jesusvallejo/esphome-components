@@ -85,6 +85,11 @@ void Radio::wakeup_receiver_task_from_isr(TaskHandle_t *arg) {
 void Radio::receive_frame() {
   if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(60000))) {
     this->radio->restart_rx();
+    // restart_rx() flushed the RX FIFO; discard any ISR notifications that
+    // fired for bytes we just threw away, otherwise the next iteration would
+    // wake immediately and try to read from an empty FIFO ("RX timeout after
+    // 0 bytes (need 3)").
+    xTaskNotifyStateClear(NULL);
     return;
   }
 
@@ -92,23 +97,33 @@ void Radio::receive_frame() {
 
   if (!this->radio->read_in_task(packet->rx_data_ptr(), packet->rx_capacity(), 0)) {
     this->radio->restart_rx();
+    xTaskNotifyStateClear(NULL);
     return;
   }
 
   if (!packet->calculate_payload_size()) {
     this->radio->restart_rx();
+    xTaskNotifyStateClear(NULL);
     return;
   }
 
   if (!this->radio->read_in_task(packet->rx_data_ptr(), packet->rx_capacity(), 3)) {
     this->radio->restart_rx();
+    xTaskNotifyStateClear(NULL);
     return;
   }
 
   packet->set_rssi(this->radio->get_rssi());
 
-  // Re-arm sync word detector for next packet
+  // Re-arm sync word detector for next packet. Clear any pending task
+  // notification afterwards: a second telegram may have arrived while we
+  // were still reading/processing this one, raising the FIFO threshold IRQ
+  // and incrementing our notification value. restart_rx() just flushed
+  // those bytes, so the notification is stale — consuming it on the next
+  // loop iteration would cause a spurious "RX timeout after 0 bytes" read
+  // attempt against an empty FIFO.
   this->radio->restart_rx();
+  xTaskNotifyStateClear(NULL);
 
   auto packet_ptr = packet.get();
 
