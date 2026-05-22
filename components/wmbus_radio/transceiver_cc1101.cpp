@@ -59,8 +59,23 @@ void CC1101::setup() {
   this->write_register(CC1101_PKTLEN, 0xFF);
   // Packet control 1: No address check, no append status, no CRC autoflush
   this->write_register(CC1101_PKTCTRL1, 0x00);
-  // Packet control 0: Variable packet length, no whitening, no CRC
-  this->write_register(CC1101_PKTCTRL0, 0x00);
+  // Packet control 0: Infinite packet length, no whitening, no CRC.
+  //
+  // The previous value (0x00) selected FIXED packet length mode. With
+  // PKTLEN=0xFF this told the chip to receive exactly 255 bytes after every
+  // sync word detection, then go IDLE. A real wM-Bus T1/C1 telegram is
+  // typically 30–80 bytes on air, so the chip would continue demodulating
+  // ~200 bytes of noise into the 64-byte RX FIFO after the actual packet
+  // ended — overrunning the FIFO and producing the "RX FIFO overflow" /
+  // "RX timeout after 0 bytes (need 3)" pattern reported by users on
+  // single-core ESP32-C3 / S3 / C6 targets sharing the core with WiFi.
+  //
+  // Infinite length mode (0x02) matches the receive loop in component.cpp,
+  // which determines the real telegram length from the decoded L-field and
+  // then issues SIDLE/SFRX/SRX via restart_rx() to stop the chip exactly
+  // when expected_size bytes have been read. See SzczepanLeon PR #382 and
+  // CC1101 datasheet §15.2.
+  this->write_register(CC1101_PKTCTRL0, 0x02);
 
   // No device address filtering
   this->write_register(CC1101_ADDR, 0x00);
