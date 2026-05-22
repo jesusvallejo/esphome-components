@@ -3,6 +3,8 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include <climits>
+
 #define ASSERT(expr, expected, before_exit)                                    \
   {                                                                            \
     auto result = (expr);                                                      \
@@ -89,7 +91,7 @@ void Radio::receive_frame() {
     // fired for bytes we just threw away, otherwise the next iteration would
     // wake immediately and try to read from an empty FIFO ("RX timeout after
     // 0 bytes (need 3)").
-    xTaskNotifyStateClear(NULL);
+    ulTaskNotifyValueClear(NULL, ULONG_MAX);
     return;
   }
 
@@ -97,19 +99,19 @@ void Radio::receive_frame() {
 
   if (!this->radio->read_in_task(packet->rx_data_ptr(), packet->rx_capacity(), 0)) {
     this->radio->restart_rx();
-    xTaskNotifyStateClear(NULL);
+    ulTaskNotifyValueClear(NULL, ULONG_MAX);
     return;
   }
 
   if (!packet->calculate_payload_size()) {
     this->radio->restart_rx();
-    xTaskNotifyStateClear(NULL);
+    ulTaskNotifyValueClear(NULL, ULONG_MAX);
     return;
   }
 
   if (!this->radio->read_in_task(packet->rx_data_ptr(), packet->rx_capacity(), 3)) {
     this->radio->restart_rx();
-    xTaskNotifyStateClear(NULL);
+    ulTaskNotifyValueClear(NULL, ULONG_MAX);
     return;
   }
 
@@ -123,7 +125,7 @@ void Radio::receive_frame() {
   // loop iteration would cause a spurious "RX timeout after 0 bytes" read
   // attempt against an empty FIFO.
   this->radio->restart_rx();
-  xTaskNotifyStateClear(NULL);
+  ulTaskNotifyValueClear(NULL, ULONG_MAX);
 
   auto packet_ptr = packet.get();
 
