@@ -91,3 +91,5 @@ namespace
 // telegram=|1A443330503702000B027AD74c0020|2F2F8E40FD3A700800000000|
 // {"_":"telegram","media":"electricity","meter":"lansenpu","name":"COUNTB","id":"00023750","status":"PERMANENT_ERROR POWER_LOW SABOTAGE_ENCLOSURE","b_counter":870,"timestamp":"1111-11-11T11:11:11Z"}
 // |COUNTB;00023750;PERMANENT_ERROR POWER_LOW SABOTAGE_ENCLOSURE;null;870;1111-11-11 11:11.11
+
+char wmbus_keep_lansenpu = 0;  // link seam: keep self-registering driver in native esp-idf archive build

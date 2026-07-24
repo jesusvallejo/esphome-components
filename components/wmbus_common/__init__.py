@@ -1,3 +1,5 @@
+import re
+
 import esphome.config_validation as cv
 from esphome.const import SOURCE_FILE_EXTENSIONS, CONF_ID
 from esphome import codegen as cg
@@ -43,3 +45,16 @@ def FILTER_SOURCE_FILES():
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID], sorted(_registered_drivers))
     await cg.register_component(var, config)
+    # Force-link self-registering driver objects. The native ESP-IDF build
+    # archives all of ESPHome into libsrc.a, and the linker drops any driver
+    # .o whose registerDriver() static-init is never referenced -> the driver
+    # is silently absent at runtime and createMeter() returns null. Reference
+    # an anchor symbol from each compiled driver so its object (and its
+    # registration constructor) is pulled back into the link.
+    for driver in sorted(_registered_drivers):
+        sym = "wmbus_keep_" + re.sub(r"\W", "_", driver)
+        cg.add_global(
+            cg.RawStatement(
+                f"extern char {sym}; char *{sym}_ref __attribute__((used)) = &{sym};"
+            )
+        )

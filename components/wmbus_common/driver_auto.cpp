@@ -40,3 +40,5 @@ std::shared_ptr<Meter> createAuto(MeterInfo &mi)
     di.setName("auto");
     return std::shared_ptr<Meter>(new MeterAuto(mi, di));
 }
+
+char wmbus_keep_auto = 0;  // link seam: keep self-registering driver in native esp-idf archive build

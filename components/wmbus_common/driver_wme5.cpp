@@ -81,3 +81,5 @@ namespace
     }
 
 }
+
+char wmbus_keep_wme5 = 0;  // link seam: keep self-registering driver in native esp-idf archive build

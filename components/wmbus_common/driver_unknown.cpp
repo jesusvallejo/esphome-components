@@ -40,3 +40,5 @@ std::shared_ptr<Meter> createUnknown(MeterInfo &mi)
     di.setName("unknown");
     return std::shared_ptr<Meter>(new MeterUnknown(mi, di));
 }
+
+char wmbus_keep_unknown = 0;  // link seam: keep self-registering driver in native esp-idf archive build
